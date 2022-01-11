@@ -2,12 +2,12 @@ use rand::Rng;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::time::Duration;
 
 fn main() -> Result<(), String> {
-    let java = std::env::var("JAVA_PATH").unwrap_or("java".into());
-    let lsp_jar = std::env::var("LSP_JAR_PATH").unwrap_or(jar_path());
+    let java = std::env::var("JAVA_PATH").unwrap_or_else(|_| "java".into());
+    let lsp_jar = std::env::var("LSP_JAR_PATH").unwrap_or_else(|_| jar_path());
     let lsp_path: &Path = lsp_jar.as_ref();
 
     if !lsp_path.exists() || !lsp_path.is_file() {
