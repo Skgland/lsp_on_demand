@@ -1,10 +1,22 @@
 use rand::Rng;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::path::Path;
 use std::process::Child;
 use std::time::Duration;
 
-fn main() {
+fn main() -> Result<(), String> {
+    let java = std::env::var("JAVA_PATH").unwrap_or("java".into());
+    let lsp_jar = std::env::var("LSP_JAR_PATH").unwrap_or(jar_path());
+    let lsp_path: &Path = lsp_jar.as_ref();
+
+    if !lsp_path.exists() || !lsp_path.is_file() {
+        return Err(format!(
+            "Can't find language server jar at {}",
+            lsp_path.display()
+        ));
+    }
+
     let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 5007));
     let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5007));
 
@@ -15,13 +27,14 @@ fn main() {
     for connection in socket.incoming() {
         match connection {
             Err(err) => eprint!("{}", err),
-            Ok(con) => handle_connection(con, rng.gen_range(5008..=65535)),
+            Ok(con) => handle_connection(con, rng.gen_range(5008..=65535), &java, &lsp_jar),
         }
     }
+
+    Ok(())
 }
 
-fn spawn_lsp(port: u16) -> Child {
-    let java = std::env::var("JAVA_PATH").unwrap_or("java".into());
+fn jar_path() -> String {
     let infix = if cfg!(target_os = "windows") {
         "win"
     } else if cfg!(target_os = "macos") {
@@ -32,22 +45,30 @@ fn spawn_lsp(port: u16) -> Child {
         "unknown"
     };
 
-    std::process::Command::new(java)
-        .args(&[
-            &format!("-Dport={}", port),
-            "-Dfile.encoding=UTF-8",
-            "-Djava.awt.headless=true",
-            "-XX:+ShowCodeDetailsInExceptionMessages",
-            "-jar",
-            &format!("./server/kieler-language-server.{infix}.jar", infix = infix),
-        ])
-        .spawn()
-        .unwrap()
+    format!("./server/kieler-language-server.{infix}.jar", infix = infix)
 }
 
-fn handle_connection(con: TcpStream, port: u16) {
+fn spawn_lsp(port: u16, java: &str, lsp_jar: &str) -> Child {
+    let mut command = std::process::Command::new(java);
+    command.args(&[
+        &format!("-Dport={}", port),
+        "-Dfile.encoding=UTF-8",
+        "-Djava.awt.headless=true",
+        "-XX:+ShowCodeDetailsInExceptionMessages",
+        "-jar",
+        lsp_jar,
+    ]);
+    println!("{:?}", command);
+    command.spawn().unwrap()
+}
+
+fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
+    // create an owned copy of the strings references so we can move them into the spawned thread
+    let java = String::from(java);
+    let lsp_jar = String::from(lsp_jar);
+
     std::thread::spawn(move || {
-        let mut proc = spawn_lsp(port);
+        let mut proc = spawn_lsp(port, &java, &lsp_jar);
 
         let mut client_read = con.try_clone().unwrap();
         let mut client_write = con;
