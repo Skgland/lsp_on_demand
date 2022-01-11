@@ -2,7 +2,7 @@ use rand::Rng;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::Path;
-use std::process::Child;
+use std::process::{Child, Command};
 use std::time::Duration;
 
 fn main() -> Result<(), String> {
@@ -48,7 +48,7 @@ fn jar_path() -> String {
     format!("./server/kieler-language-server.{infix}.jar", infix = infix)
 }
 
-fn spawn_lsp(port: u16, java: &str, lsp_jar: &str) -> Child {
+fn lsp_command(port: u16, java: &str, lsp_jar: &str) -> Command {
     let mut command = std::process::Command::new(java);
     command.args(&[
         &format!("-Dport={}", port),
@@ -58,17 +58,15 @@ fn spawn_lsp(port: u16, java: &str, lsp_jar: &str) -> Child {
         "-jar",
         lsp_jar,
     ]);
-    println!("{:?}", command);
-    command.spawn().unwrap()
+    command
 }
 
 fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
-    // create an owned copy of the strings references so we can move them into the spawned thread
-    let java = String::from(java);
-    let lsp_jar = String::from(lsp_jar);
+    let mut lsp_cmd = lsp_command(port, java, lsp_jar);
 
     std::thread::spawn(move || {
-        let mut proc = spawn_lsp(port, &java, &lsp_jar);
+        println!("{:?}", lsp_cmd);
+        let mut lsp_proc = lsp_cmd.spawn().unwrap();
 
         let mut client_read = con.try_clone().unwrap();
         let mut client_write = con;
@@ -81,7 +79,7 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
             if let Ok(con) = server_con {
                 println!("Connected to Server");
                 break con;
-            } else if let Ok(Some(_exit)) = proc.try_wait() {
+            } else if let Ok(Some(_exit)) = lsp_proc.try_wait() {
                 return;
             } else {
                 println!("Trying again!");
@@ -114,8 +112,8 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
             }
         }
 
-        let _ = proc.kill();
-        let _ = proc.wait();
+        let _ = lsp_proc.kill();
+        let _ = lsp_proc.wait();
         let _ = join_handle.join();
         println!("Finished handling a connection and cleanup!")
     });
