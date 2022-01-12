@@ -22,7 +22,13 @@ fn main() -> Result<(), String> {
 
     let socket = std::net::TcpListener::bind([sock_ipv6, sock_ipv4].as_slice()).unwrap();
 
+    let addr = socket
+        .local_addr()
+        .map_or_else(|_| String::from("unknown"), |addr| addr.to_string());
+
     let mut rng = rand::thread_rng();
+
+    println!("Waiting for connections on {}", addr);
 
     for connection in socket.incoming() {
         match connection {
@@ -65,24 +71,39 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
     let mut lsp_cmd = lsp_command(port, java, lsp_jar);
 
     std::thread::spawn(move || {
-        println!("{:?}", lsp_cmd);
-        let mut lsp_proc = lsp_cmd.spawn().unwrap();
+        let lsp_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
 
+        let client_addr = con.peer_addr().ok();
+        let client = match client_addr {
+            Some(addr) => addr.to_string(),
+            None => String::from("unknown"),
+        };
+
+        println!(
+            "[{}] attempting to spawn LSP on port {}\n> {:?}",
+            client, port, lsp_cmd
+        );
+
+        let mut lsp_proc = lsp_cmd.spawn().unwrap();
         let mut client_read = con.try_clone().unwrap();
         let mut client_write = con;
 
+        println!("[{}] Giving the LSP time to startup!", client);
         std::thread::sleep(Duration::from_secs(5));
+        println!("[{}] Attempting to connect to LSP at {}", client, lsp_addr);
 
         let server_con = loop {
-            let server_con =
-                std::net::TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
+            let server_con = std::net::TcpStream::connect(lsp_addr);
             if let Ok(con) = server_con {
-                println!("Connected to Server");
+                println!("[{}] Connected to LSP at {}", client, lsp_addr);
                 break con;
             } else if let Ok(Some(_exit)) = lsp_proc.try_wait() {
                 return;
             } else {
-                println!("Trying again!");
+                println!(
+                    "[{}] Re-Attempting to connect to LSP at {}",
+                    client, lsp_addr
+                );
             }
         };
 
@@ -112,9 +133,10 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
             }
         }
 
+        println!("[{}] Killing LSP at {}", client, lsp_addr);
         let _ = lsp_proc.kill();
         let _ = lsp_proc.wait();
         let _ = join_handle.join();
-        println!("Finished handling a connection and cleanup!")
+        println!("[{}] Finished handling a connection and cleanup!", client)
     });
 }
