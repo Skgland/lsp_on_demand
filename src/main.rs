@@ -71,7 +71,11 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
     let mut lsp_cmd = lsp_command(port, java, lsp_jar);
 
     std::thread::spawn(move || {
-        let lsp_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let lsp_addrs = [
+            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        ];
+        let mut lsp = format!("{} or {}", lsp_addrs[0], lsp_addrs[1]);
 
         let client_addr = con.peer_addr().ok();
         let client = match client_addr {
@@ -90,21 +94,21 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
 
         println!("[{}] Giving the LSP time to startup!", client);
         std::thread::sleep(Duration::from_secs(5));
-        println!("[{}] Attempting to connect to LSP at {}", client, lsp_addr);
+        println!("[{}] Attempting to connect to LSP at {}", client, lsp);
 
         let server_con = loop {
-            let server_con = std::net::TcpStream::connect(lsp_addr);
+            let server_con = std::net::TcpStream::connect(lsp_addrs.as_slice());
             if let Ok(con) = server_con {
-                println!("[{}] Connected to LSP at {}", client, lsp_addr);
+                if let Ok(lsp_addr) = con.peer_addr() {
+                    lsp = lsp_addr.to_string();
+                }
+                println!("[{}] Connected to LSP at {}", client, lsp);
                 break con;
             } else if let Ok(Some(_exit)) = lsp_proc.try_wait() {
                 return;
             } else {
                 std::thread::sleep(Duration::from_secs(1));
-                println!(
-                    "[{}] Re-Attempting to connect to LSP at {}",
-                    client, lsp_addr
-                );
+                println!("[{}] Re-Attempting to connect to LSP at {}", client, lsp);
             }
         };
 
@@ -134,7 +138,7 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
             }
         }
 
-        println!("[{}] Killing LSP at {}", client, lsp_addr);
+        println!("[{}] Killing LSP at {}", client, lsp);
         let _ = lsp_proc.kill();
         let _ = lsp_proc.wait();
         let _ = join_handle.join();
