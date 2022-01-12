@@ -100,6 +100,7 @@ fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
             } else if let Ok(Some(_exit)) = lsp_proc.try_wait() {
                 return;
             } else {
+                std::thread::sleep(Duration::from_secs(1));
                 println!(
                     "[{}] Re-Attempting to connect to LSP at {}",
                     client, lsp_addr
