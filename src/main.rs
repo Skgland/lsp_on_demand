@@ -20,6 +20,12 @@ fn main() -> Result<(), String> {
     let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 5007));
     let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5007));
 
+    // try to bind via IPv6 and fallback to IPv4
+    // some systems binding an IPv6 socket also binds a corresponding IPv4 socket
+    // the connections of the latter are then received by the IPv6 socket
+    // by using IPv4-Compatible (deprecated) or IPv4-Mapped IPv6 addresses
+    // so preferring IPv6 may allow us to handle both with one socket
+    // See [RFC 3493](https://datatracker.ietf.org/doc/html/rfc3493) Sections 3.7 and 5.3
     let socket = std::net::TcpListener::bind([sock_ipv6, sock_ipv4].as_slice()).unwrap();
 
     let addr = socket
