@@ -67,6 +67,7 @@ fn lsp_command(port: u16, java: &str, lsp_jar: &str) -> Command {
         "-Dfile.encoding=UTF-8",
         "-Djava.awt.headless=true",
         "-Dlog4j.configuration=file:server/log4j.properties",
+        "-XX:+IgnoreUnrecognizedVMOptions",
         "-XX:+ShowCodeDetailsInExceptionMessages",
         "-jar",
         lsp_jar,
