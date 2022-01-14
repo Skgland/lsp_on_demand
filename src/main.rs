@@ -1,19 +1,27 @@
 use rand::Rng;
+use structopt::StructOpt;
+
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-fn main() -> Result<(), String> {
-    let java = std::env::var("JAVA_PATH").unwrap_or_else(|_| "java".into());
-    let lsp_jar = std::env::var("LSP_JAR_PATH").unwrap_or_else(|_| jar_path());
-    let lsp_path: &Path = lsp_jar.as_ref();
+#[derive(StructOpt)]
+struct Arguments {
+    #[structopt(long = "jvm", env = "JAVA_PATH", default_value = "java")]
+    java: PathBuf,
+    #[structopt(long="jar", env = "LSP_JAR_PATH", default_value = DEFAULT_JAR_PATH)]
+    lsp_jar: PathBuf,
+}
 
-    if !lsp_path.exists() || !lsp_path.is_file() {
+fn main() -> Result<(), String> {
+    let args = Arguments::from_args();
+
+    if !args.lsp_jar.exists() || !args.lsp_jar.is_file() {
         return Err(format!(
             "Can't find language server jar at {}",
-            lsp_path.display()
+            args.lsp_jar.display()
         ));
     }
 
@@ -39,44 +47,43 @@ fn main() -> Result<(), String> {
     for connection in socket.incoming() {
         match connection {
             Err(err) => eprint!("{}", err),
-            Ok(con) => handle_connection(con, rng.gen_range(5008..=65535), &java, &lsp_jar),
+            Ok(con) => handle_connection(con, rng.gen_range(5008..=65535), &args),
         }
     }
 
     Ok(())
 }
 
-fn jar_path() -> String {
-    let infix = if cfg!(target_os = "windows") {
-        "win"
+const DEFAULT_JAR_PATH: &str = {
+    if cfg!(target_os = "windows") {
+        "./server/kieler-language-server.win.jar"
     } else if cfg!(target_os = "macos") {
-        "osx"
+        "./server/kieler-language-server.osx.jar"
     } else if cfg!(target_os = "linux") {
-        "linux"
+        "./server/kieler-language-server.linux.jar"
     } else {
-        "unknown"
-    };
+        "./server/kieler-language-server.unknown.jar"
+    }
+};
 
-    format!("./server/kieler-language-server.{infix}.jar", infix = infix)
-}
-
-fn lsp_command(port: u16, java: &str, lsp_jar: &str) -> Command {
-    let mut command = std::process::Command::new(java);
-    command.args(&[
-        &format!("-Dport={}", port),
-        "-Dfile.encoding=UTF-8",
-        "-Djava.awt.headless=true",
-        "-Dlog4j.configuration=file:server/log4j.properties",
-        "-XX:+IgnoreUnrecognizedVMOptions",
-        "-XX:+ShowCodeDetailsInExceptionMessages",
-        "-jar",
-        lsp_jar,
-    ]);
+fn lsp_command(port: u16, args: &Arguments) -> Command {
+    let mut command = std::process::Command::new(&args.java);
+    command
+        .args(&[
+            &format!("-Dport={}", port),
+            "-Dfile.encoding=UTF-8",
+            "-Djava.awt.headless=true",
+            "-Dlog4j.configuration=file:server/log4j.properties",
+            "-XX:+IgnoreUnrecognizedVMOptions",
+            "-XX:+ShowCodeDetailsInExceptionMessages",
+            "-jar",
+        ])
+        .arg(&args.lsp_jar);
     command
 }
 
-fn handle_connection(con: TcpStream, port: u16, java: &str, lsp_jar: &str) {
-    let mut lsp_cmd = lsp_command(port, java, lsp_jar);
+fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
+    let mut lsp_cmd = lsp_command(port, args);
 
     std::thread::spawn(move || {
         let lsp_addrs = [
