@@ -17,3 +17,7 @@ Some options can be configured using environment variables:
 |:---------------|:------------------------------------------------------|:-------------------------|
 | `JAVA_PATH`    | `java`                                                | the java binary to run   |
 | `LSP_JAR_PATH` | `./server/kieler-language-server.{linux,osx,win}.jar` | the lsp jar to use       |
+
+### See also
+
+[Installing a Rust Toolchain](https://www.rust-lang.org/tools/install)
