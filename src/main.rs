@@ -13,7 +13,7 @@ use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::ParsePortRangeError::{OrderError, PortError, RangeError};
+use crate::ParsePortRangeError::{MissingEndSeperator, ParseInt, StartLargerThanEnd};
 
 /// This program waits for connections and
 /// for each connection spawns a new language server and relays the messages in both directions
@@ -55,14 +55,14 @@ struct PortRange {
 
 #[derive(Debug)]
 enum ParsePortRangeError {
-    PortError(ParseIntError),
-    RangeError,
-    OrderError,
+    ParseInt(ParseIntError),
+    MissingEndSeperator,
+    StartLargerThanEnd,
 }
 
 impl From<ParseIntError> for ParsePortRangeError {
     fn from(int_err: ParseIntError) -> Self {
-        PortError(int_err)
+        ParseInt(int_err)
     }
 }
 
@@ -70,12 +70,12 @@ impl FromStr for PortRange {
     type Err = ParsePortRangeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (start, end) = s.split_once('-').ok_or(RangeError)?;
+        let (start, end) = s.split_once('-').ok_or(MissingEndSeperator)?;
         let start = start.trim().parse()?;
         let end = end.trim().parse()?;
 
         if start > end {
-            Err(OrderError)
+            Err(StartLargerThanEnd)
         } else {
             Ok(PortRange { range: start..=end })
         }
@@ -85,18 +85,18 @@ impl FromStr for PortRange {
 impl Display for ParsePortRangeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            PortError(int_err) => write!(
+            ParseInt(int_err) => write!(
                 f,
                 "the start and end of the port range should be integers in the range {}-{}: {}",
                 u16::MIN,
                 u16::MAX,
                 int_err
             )?,
-            RangeError => write!(
+            MissingEndSeperator => write!(
                 f,
                 "the start port should be separated from the end port of the port range by a '-'"
             )?,
-            OrderError => write!(
+            StartLargerThanEnd => write!(
                 f,
                 "the end of the port range should not be smaller than the start"
             )?,
@@ -294,7 +294,7 @@ fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
                 warn!("[{}] Failed to wait for lsp child process: {}", client, err)
             }
         }
-        if let Err(err) = join_handle.join() {
+        if let Err(_err) = join_handle.join() {
             warn!(
                 "[{}] Failed to join panicked server -> client relay thread",
                 client
