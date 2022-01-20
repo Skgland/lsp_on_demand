@@ -1,8 +1,10 @@
+use log::{debug, error, info, LevelFilter};
 use rand::Rng;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
 use structopt::StructOpt;
 
+use pretty_env_logger::env_logger::Env;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::num::ParseIntError;
@@ -107,6 +109,16 @@ impl Display for ParsePortRangeError {
 impl Error for ParsePortRangeError {}
 
 fn main() -> Result<(), String> {
+    let mut logger_builder = pretty_env_logger::formatted_builder();
+    logger_builder
+        .filter_level(LevelFilter::Trace)
+        .format_timestamp_secs();
+
+    if let Ok(value) = std::env::var("RUST_LOG") {
+        logger_builder.parse_filters(&value);
+    }
+    logger_builder.init();
+
     let args = Arguments::from_args();
 
     if !args.lsp_jar.exists() || !args.lsp_jar.is_file() {
@@ -119,7 +131,7 @@ fn main() -> Result<(), String> {
     let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.lsp_listen_port));
     let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, args.lsp_listen_port));
 
-    println!(
+    info!(
         "Attempting to start listening on {} or {}",
         sock_ipv6, sock_ipv4
     );
@@ -140,11 +152,11 @@ fn main() -> Result<(), String> {
 
     let mut rng = rand::thread_rng();
 
-    println!("Waiting for connections on {}", address);
+    info!("Waiting for connections on {}", address);
 
     for connection in listener.incoming() {
         match connection {
-            Err(err) => eprint!("{}", err),
+            Err(err) => error!("{}", err),
             Ok(con) => handle_connection(
                 con,
                 rng.gen_range(args.lsp_spawn_ports.range.clone()),
@@ -200,7 +212,7 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
             None => String::from("unknown"),
         };
 
-        println!(
+        info!(
             "[{}] attempting to spawn LSP on port {}\n> {:?}",
             client, port, lsp_cmd
         );
@@ -209,9 +221,9 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
         let mut client_read = con.try_clone().unwrap();
         let mut client_write = con;
 
-        println!("[{}] Giving the LSP time to startup!", client);
+        debug!("[{}] Giving the LSP time to startup!", client);
         std::thread::sleep(Duration::from_secs(5));
-        println!("[{}] Attempting to connect to LSP at {}", client, lsp);
+        info!("[{}] Attempting to connect to LSP at {}", client, lsp);
 
         let server_con = loop {
             let server_con = std::net::TcpStream::connect(lsp_addrs.as_slice());
@@ -219,13 +231,13 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
                 if let Ok(lsp_addr) = con.peer_addr() {
                     lsp = lsp_addr.to_string();
                 }
-                println!("[{}] Connected to LSP at {}", client, lsp);
+                info!("[{}] Connected to LSP at {}", client, lsp);
                 break con;
             } else if let Ok(Some(_exit)) = lsp_proc.try_wait() {
                 return;
             } else {
                 std::thread::sleep(Duration::from_secs(1));
-                println!("[{}] Re-Attempting to connect to LSP at {}", client, lsp);
+                info!("[{}] Re-Attempting to connect to LSP at {}", client, lsp);
             }
         };
 
@@ -255,10 +267,10 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
             }
         }
 
-        println!("[{}] Killing LSP at {}", client, lsp);
+        debug!("[{}] Killing LSP at {}", client, lsp);
         let _ = lsp_proc.kill();
         let _ = lsp_proc.wait();
         let _ = join_handle.join();
-        println!("[{}] Finished handling a connection and cleanup!", client)
+        info!("[{}] Finished handling a connection and cleanup!", client)
     });
 }
