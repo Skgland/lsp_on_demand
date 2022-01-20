@@ -1,19 +1,110 @@
 use rand::Rng;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use structopt::StructOpt;
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::num::ParseIntError;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::process::Command;
+use std::str::FromStr;
 use std::time::Duration;
 
+use crate::ParsePortRangeError::{OrderError, PortError, RangeError};
+
+/// This program waits for connections and
+/// for each connection spawns a new language server and relays the messages in both directions
 #[derive(StructOpt)]
 struct Arguments {
+    /// The Path to the java executable
     #[structopt(long = "jvm", env = "JAVA_PATH", default_value = "java")]
     java: PathBuf,
+
+    /// The Path to the lsp jar
     #[structopt(long="jar", env = "LSP_JAR_PATH", default_value = DEFAULT_JAR_PATH)]
     lsp_jar: PathBuf,
+
+    /// The port to listen on for incoming connections
+    #[structopt(
+        short = "p",
+        long = "port",
+        env = "LSP_LISTEN_PORT",
+        default_value = "5007"
+    )]
+    lsp_listen_port: u16,
+
+    /// The range of ports to use for spawning language servers
+    ///
+    /// The port is chosen randomly, without taking into account ports already in use!
+    #[structopt(
+        short = "s",
+        long = "spawn",
+        env = "LSP_SPAWN_PORTS",
+        default_value = "5008-65535"
+    )]
+    lsp_spawn_ports: PortRange,
 }
+
+#[derive(Debug)]
+struct PortRange {
+    range: RangeInclusive<u16>,
+}
+
+#[derive(Debug)]
+enum ParsePortRangeError {
+    PortError(ParseIntError),
+    RangeError,
+    OrderError,
+}
+
+impl From<ParseIntError> for ParsePortRangeError {
+    fn from(int_err: ParseIntError) -> Self {
+        PortError(int_err)
+    }
+}
+
+impl FromStr for PortRange {
+    type Err = ParsePortRangeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (start, end) = s.split_once('-').ok_or(RangeError)?;
+        let start = start.trim().parse()?;
+        let end = end.trim().parse()?;
+
+        if start > end {
+            Err(OrderError)
+        } else {
+            Ok(PortRange { range: start..=end })
+        }
+    }
+}
+
+impl Display for ParsePortRangeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortError(int_err) => write!(
+                f,
+                "the start and end of the port range should be integers in the range {}-{}: {}",
+                u16::MIN,
+                u16::MAX,
+                int_err
+            )?,
+            RangeError => write!(
+                f,
+                "the start port should be separated from the end port of the port range by a '-'"
+            )?,
+            OrderError => write!(
+                f,
+                "the end of the port range should not be smaller than the start"
+            )?,
+        }
+        Ok(())
+    }
+}
+
+impl Error for ParsePortRangeError {}
 
 fn main() -> Result<(), String> {
     let args = Arguments::from_args();
@@ -25,8 +116,13 @@ fn main() -> Result<(), String> {
         ));
     }
 
-    let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 5007));
-    let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5007));
+    let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.lsp_listen_port));
+    let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, args.lsp_listen_port));
+
+    println!(
+        "Attempting to start listening on {} or {}",
+        sock_ipv6, sock_ipv4
+    );
 
     // try to bind via IPv6 and fallback to IPv4
     // some systems binding an IPv6 socket also binds a corresponding IPv4 socket
@@ -34,20 +130,26 @@ fn main() -> Result<(), String> {
     // by using IPv4-Compatible (deprecated) or IPv4-Mapped IPv6 addresses
     // so preferring IPv6 may allow us to handle both with one socket
     // See [RFC 3493](https://datatracker.ietf.org/doc/html/rfc3493) Sections 3.7 and 5.3
-    let socket = std::net::TcpListener::bind([sock_ipv6, sock_ipv4].as_slice()).unwrap();
+    let socks = [sock_ipv6, sock_ipv4];
 
-    let addr = socket
+    let listener = std::net::TcpListener::bind(socks.as_slice()).unwrap();
+
+    let address = listener
         .local_addr()
-        .map_or_else(|_| String::from("unknown"), |addr| addr.to_string());
+        .map_or_else(|_| String::from("unknown"), |address| address.to_string());
 
     let mut rng = rand::thread_rng();
 
-    println!("Waiting for connections on {}", addr);
+    println!("Waiting for connections on {}", address);
 
-    for connection in socket.incoming() {
+    for connection in listener.incoming() {
         match connection {
             Err(err) => eprint!("{}", err),
-            Ok(con) => handle_connection(con, rng.gen_range(5008..=65535), &args),
+            Ok(con) => handle_connection(
+                con,
+                rng.gen_range(args.lsp_spawn_ports.range.clone()),
+                &args,
+            ),
         }
     }
 
