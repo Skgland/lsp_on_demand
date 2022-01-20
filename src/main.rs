@@ -1,8 +1,7 @@
-use log::{debug, error, info, LevelFilter};
+use log::{debug, error, info, warn, LevelFilter};
 use rand::Rng;
 use structopt::StructOpt;
 
-use pretty_env_logger::env_logger::Env;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Write};
@@ -196,7 +195,19 @@ fn lsp_command(port: u16, args: &Arguments) -> Command {
     command
 }
 
-fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
+fn relay_connection(mut rx: TcpStream, mut tx: TcpStream) {
+    let mut buf = [0; 1024];
+    loop {
+        match rx.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(bytes) => {
+                let _ = tx.write_all(&buf[..bytes]);
+            }
+        }
+    }
+}
+
+fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
     let mut lsp_cmd = lsp_command(port, args);
 
     std::thread::spawn(move || {
@@ -206,7 +217,7 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
         ];
         let mut lsp = format!("{} or {}", lsp_addrs[0], lsp_addrs[1]);
 
-        let client_addr = con.peer_addr().ok();
+        let client_addr = client_con.peer_addr().ok();
         let client = match client_addr {
             Some(addr) => addr.to_string(),
             None => String::from("unknown"),
@@ -217,9 +228,25 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
             client, port, lsp_cmd
         );
 
-        let mut lsp_proc = lsp_cmd.spawn().unwrap();
-        let mut client_read = con.try_clone().unwrap();
-        let mut client_write = con;
+        let mut lsp_proc = match lsp_cmd.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                error!("[{}] Failed to spawn child lsp process: {}", client, err);
+                return;
+            }
+        };
+
+        let client_read = match client_con.try_clone() {
+            Ok(x) => x,
+            Err(err) => {
+                error!(
+                    "[{}] Failed to clone client stream, for independent processing of writes and reads: {}",
+                    client, err
+                );
+                return;
+            }
+        };
+        let client_write = client_con;
 
         debug!("[{}] Giving the LSP time to startup!", client);
         std::thread::sleep(Duration::from_secs(5));
@@ -241,36 +268,38 @@ fn handle_connection(con: TcpStream, port: u16, args: &Arguments) {
             }
         };
 
-        let mut server_read = server_con.try_clone().unwrap();
-        let mut server_write = server_con;
-
-        let join_handle = std::thread::spawn(move || {
-            let mut buf = [0; 1024];
-            loop {
-                match server_read.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(bytes) => {
-                        let _ = client_write.write_all(&buf[..bytes]);
-                    }
-                }
+        let server_read = match server_con.try_clone() {
+            Ok(x) => x,
+            Err(err) => {
+                error!(
+                    "[{}] Failed to clone server stream, for independent processing of writes and reads: {}",
+                    client, err
+                );
+                return;
             }
-        });
+        };
+        let server_write = server_con;
 
-        let mut buf = [0; 1024];
+        let join_handle = std::thread::spawn(move || relay_connection(server_read, client_write));
 
-        loop {
-            match client_read.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(bytes) => {
-                    let _ = server_write.write_all(&buf[..bytes]);
-                }
-            }
-        }
+        relay_connection(client_read, server_write);
 
         debug!("[{}] Killing LSP at {}", client, lsp);
-        let _ = lsp_proc.kill();
-        let _ = lsp_proc.wait();
-        let _ = join_handle.join();
+        if let Err(err) = lsp_proc.kill() {
+            warn!("[{}] Failed to kill lsp child process: {}", client, err);
+            info!("[{}] Will not wait for lsp child process", client)
+        } else {
+            // only wait on lsp process if it was killed successfully
+            if let Err(err) = lsp_proc.wait() {
+                warn!("[{}] Failed to wait for lsp child process: {}", client, err)
+            }
+        }
+        if let Err(err) = join_handle.join() {
+            warn!(
+                "[{}] Failed to join panicked server -> client relay thread",
+                client
+            );
+        }
         info!("[{}] Finished handling a connection and cleanup!", client)
     });
 }
