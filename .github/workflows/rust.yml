@@ -10,14 +10,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  rustfmt:
+    
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v2
     - name: Check rustfmt
       run: cargo fmt -- --check
+
+  build:
+
+    runs-on: ubuntu-latest
+    needs: rustfmt
+    steps:
+    - uses: actions/checkout@v2
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -30,7 +37,7 @@ jobs:
   build-minimal-versions:
 
     runs-on: ubuntu-latest
-    needs: build
+    needs: rustfmt
     steps:
     - uses: actions/checkout@v2
     - name: Install latest nightly
