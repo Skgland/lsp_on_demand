@@ -2,18 +2,19 @@ use log::{debug, error, info, warn, LevelFilter};
 use rand::Rng;
 use structopt::StructOpt;
 
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
+use crate::error::ParsePortRangeError;
+use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::num::ParseIntError;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::ParsePortRangeError::{MissingEndSeperator, ParseInt, StartLargerThanEnd};
+use crate::ParsePortRangeError::{MissingEndSeperator, StartLargerThanEnd};
+
+mod error;
 
 /// This program waits for connections and
 /// for each connection spawns a new language server and relays the messages in both directions
@@ -53,19 +54,6 @@ struct PortRange {
     range: RangeInclusive<u16>,
 }
 
-#[derive(Debug)]
-enum ParsePortRangeError {
-    ParseInt(ParseIntError),
-    MissingEndSeperator,
-    StartLargerThanEnd,
-}
-
-impl From<ParseIntError> for ParsePortRangeError {
-    fn from(int_err: ParseIntError) -> Self {
-        ParseInt(int_err)
-    }
-}
-
 impl FromStr for PortRange {
     type Err = ParsePortRangeError;
 
@@ -81,31 +69,6 @@ impl FromStr for PortRange {
         }
     }
 }
-
-impl Display for ParsePortRangeError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ParseInt(int_err) => write!(
-                f,
-                "the start and end of the port range should be integers in the range {}-{}: {}",
-                u16::MIN,
-                u16::MAX,
-                int_err
-            )?,
-            MissingEndSeperator => write!(
-                f,
-                "the start port should be separated from the end port of the port range by a '-'"
-            )?,
-            StartLargerThanEnd => write!(
-                f,
-                "the end of the port range should not be smaller than the start"
-            )?,
-        }
-        Ok(())
-    }
-}
-
-impl Error for ParsePortRangeError {}
 
 fn main() -> Result<(), String> {
     let mut logger_builder = pretty_env_logger::formatted_builder();
