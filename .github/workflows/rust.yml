@@ -19,6 +19,17 @@ jobs:
     - name: Check rustfmt
       run: cargo fmt -- --check
 
+  cargo-deny:
+            
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install cargo-deny
+      run: cargo install --locked cargo-deny
+    - name: Check cargo-deny
+      run: cargo deny check all
+
   build:
 
     runs-on: ubuntu-latest
