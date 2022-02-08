@@ -26,7 +26,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install cargo-deny
-      run: cargo install --locked cargo-deny
+      uses: baptiste0928/cargo-install@v1.1.0
+      with:
+        crate: cargo-deny
     - name: Check cargo-deny
       run: cargo deny check all
 
@@ -41,7 +43,9 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
     - name: Install cargo-msrv
-      run: cargo install cargo-msrv
+      uses: baptiste0928/cargo-install@v1.1.0
+      with:
+        crate: cargo-msrv
     - name: Verify MSRV
       run: cargo msrv --verify
 
