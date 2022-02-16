@@ -1,6 +1,6 @@
+use clap::StructOpt;
 use log::{debug, error, info, warn, LevelFilter};
 use rand::Rng;
-use structopt::StructOpt;
 
 use crate::error::ParsePortRangeError;
 use std::fmt::Debug;
@@ -19,6 +19,7 @@ mod error;
 /// This program waits for connections and
 /// for each connection spawns a new language server and relays the messages in both directions
 #[derive(StructOpt)]
+#[structopt(version)]
 struct Arguments {
     /// The Path to the java executable
     #[structopt(long = "jvm", env = "JAVA_PATH", default_value = "java")]
@@ -30,7 +31,7 @@ struct Arguments {
 
     /// The port to listen on for incoming connections
     #[structopt(
-        short = "p",
+        short = 'p',
         long = "port",
         env = "LSP_LISTEN_PORT",
         default_value = "5007"
@@ -41,7 +42,7 @@ struct Arguments {
     ///
     /// The port is chosen randomly, without taking into account ports already in use!
     #[structopt(
-        short = "s",
+        short = 's',
         long = "spawn",
         env = "LSP_SPAWN_PORTS",
         default_value = "5008-65535"
@@ -81,7 +82,7 @@ fn main() -> Result<(), String> {
     }
     logger_builder.init();
 
-    let args = Arguments::from_args();
+    let args = Arguments::parse();
 
     if !args.lsp_jar.exists() || !args.lsp_jar.is_file() {
         return Err(format!(
@@ -265,4 +266,10 @@ fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
         }
         info!("[{}] Finished handling a connection and cleanup!", client)
     });
+}
+
+#[test]
+fn verify_app() {
+    use clap::IntoApp;
+    Arguments::command().debug_assert()
 }
