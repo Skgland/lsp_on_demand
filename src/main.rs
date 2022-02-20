@@ -2,10 +2,11 @@ use clap::StructOpt;
 use log::{debug, error, info, warn, LevelFilter};
 use rand::Rng;
 
-use crate::error::ParsePortRangeError;
+use crate::error::{LspOnDemandError, ParsePortRangeError};
+use socket2::{Domain, Protocol, Type};
 use std::fmt::Debug;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::process::Command;
@@ -71,7 +72,22 @@ impl FromStr for PortRange {
     }
 }
 
-fn main() -> Result<(), String> {
+fn create_tcp_listener(candidate: SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let domain = Domain::for_address(candidate);
+    let socket = socket2::Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+
+    if domain == Domain::IPV6 {
+        // force IPV6_only to false only when we are binding an IPv6 domain socket
+        socket.set_only_v6(false)?;
+    }
+    socket.bind(&candidate.into())?;
+
+    socket.listen(128)?;
+
+    Ok(socket.into())
+}
+
+fn main() -> Result<(), LspOnDemandError> {
     let mut logger_builder = pretty_env_logger::formatted_builder();
     logger_builder
         .filter_level(LevelFilter::Trace)
@@ -85,19 +101,11 @@ fn main() -> Result<(), String> {
     let args = Arguments::parse();
 
     if !args.lsp_jar.exists() || !args.lsp_jar.is_file() {
-        return Err(format!(
-            "Can't find language server jar at {}",
-            args.lsp_jar.display()
-        ));
+        return Err(LspOnDemandError::LSPNotFound(args.lsp_jar));
     }
 
     let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.lsp_listen_port));
     let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, args.lsp_listen_port));
-
-    info!(
-        "Attempting to start listening on {} or {}",
-        sock_ipv6, sock_ipv4
-    );
 
     // try to bind via IPv6 and fallback to IPv4
     // some systems binding an IPv6 socket also binds a corresponding IPv4 socket
@@ -105,9 +113,27 @@ fn main() -> Result<(), String> {
     // by using IPv4-Compatible (deprecated) or IPv4-Mapped IPv6 addresses
     // so preferring IPv6 may allow us to handle both with one socket
     // See [RFC 3493](https://datatracker.ietf.org/doc/html/rfc3493) Sections 3.7 and 5.3
+    //
+    // down below we force IPv6_ONLY to false,
+    // so that this works on systems which default to IPv6_ONLY set to true
     let socks = [sock_ipv6, sock_ipv4];
 
-    let listener = std::net::TcpListener::bind(socks.as_slice()).unwrap();
+    info!("Attempting to start listening on one of {:?}", socks);
+
+    let mut sockets: &[_] = &socks;
+
+    let listener = loop {
+        match sockets {
+            [] => panic!("Binding to all candidate sockets failed!"),
+            &[candidate, ref rem @ ..] => {
+                sockets = rem;
+                match create_tcp_listener(candidate) {
+                    Ok(listener) => break listener,
+                    Err(err) => warn!("Failed to create TcpListener for {}: {}", candidate, err),
+                }
+            }
+        }
+    };
 
     let address = listener
         .local_addr()
