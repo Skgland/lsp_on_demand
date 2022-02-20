@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum LspOnDemandError {
     LSPNotFound(PathBuf),
+    LSPListenFailed,
     IOError(std::io::Error),
 }
 
@@ -18,6 +19,9 @@ impl Display for LspOnDemandError {
             }
             LspOnDemandError::IOError(ioe) => {
                 write!(f, "{}", ioe)
+            }
+            LspOnDemandError::LSPListenFailed => {
+                write!(f, "Out of socket candidates to listen for LSP connections, can't listen for LSP connections!")
             }
         }
     }

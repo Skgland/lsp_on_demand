@@ -124,7 +124,7 @@ fn main() -> Result<(), LspOnDemandError> {
 
     let listener = loop {
         match sockets {
-            [] => panic!("Binding to all candidate sockets failed!"),
+            [] => return Err(LspOnDemandError::LSPListenFailed),
             &[candidate, ref rem @ ..] => {
                 sockets = rem;
                 match create_tcp_listener(candidate) {
