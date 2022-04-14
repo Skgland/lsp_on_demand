@@ -239,7 +239,7 @@ fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
         let client_write = client_con;
 
         debug!("[{}] Giving the LSP time to startup!", client);
-        std::thread::sleep(Duration::from_secs(5));
+        std::thread::sleep(Duration::from_secs(3));
         info!("[{}] Attempting to connect to LSP at {}", client, lsp);
 
         let server_con = loop {
