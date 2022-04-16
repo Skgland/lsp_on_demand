@@ -9,6 +9,7 @@ pub enum LspOnDemandError {
     LSPNotFound(PathBuf),
     LSPListenFailed,
     IOError(std::io::Error),
+    PoolError(r2d2::Error),
 }
 
 impl Display for LspOnDemandError {
@@ -23,6 +24,9 @@ impl Display for LspOnDemandError {
             LspOnDemandError::LSPListenFailed => {
                 write!(f, "Out of socket candidates to listen for LSP connections, can't listen for LSP connections!")
             }
+            LspOnDemandError::PoolError(inner) => {
+                write!(f, "Failed to create LanguageServer Pool: {}", inner)
+            }
         }
     }
 }
@@ -32,6 +36,12 @@ impl Error for LspOnDemandError {}
 impl From<std::io::Error> for LspOnDemandError {
     fn from(ioe: std::io::Error) -> Self {
         Self::IOError(ioe)
+    }
+}
+
+impl From<r2d2::Error> for LspOnDemandError {
+    fn from(pool_error: r2d2::Error) -> Self {
+        Self::PoolError(pool_error)
     }
 }
 

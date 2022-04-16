@@ -1,76 +1,21 @@
 use clap::StructOpt;
-use log::{debug, error, info, warn, LevelFilter};
-use rand::Rng;
+use log::{error, info, warn, LevelFilter};
 
 use crate::error::{LspOnDemandError, ParsePortRangeError};
+use arguments::Arguments;
+use r2d2::Pool;
 use socket2::{Domain, Protocol, Type};
-use std::fmt::Debug;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::process::Command;
-use std::str::FromStr;
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::ops::DerefMut;
 use std::time::Duration;
 
+use crate::pool::LSPPoolManager;
 use crate::ParsePortRangeError::{MissingEndSeperator, StartLargerThanEnd};
 
+mod arguments;
 mod error;
-
-/// This program waits for connections and
-/// for each connection spawns a new language server and relays the messages in both directions
-#[derive(StructOpt)]
-#[structopt(version)]
-struct Arguments {
-    /// The Path to the java executable
-    #[structopt(long = "jvm", env = "JAVA_PATH", default_value = "java")]
-    java: PathBuf,
-
-    /// The Path to the lsp jar
-    #[structopt(long="jar", env = "LSP_JAR_PATH", default_value = DEFAULT_JAR_PATH)]
-    lsp_jar: PathBuf,
-
-    /// The port to listen on for incoming connections
-    #[structopt(
-        short = 'p',
-        long = "port",
-        env = "LSP_LISTEN_PORT",
-        default_value = "5007"
-    )]
-    lsp_listen_port: u16,
-
-    /// The range of ports to use for spawning language servers
-    ///
-    /// The port is chosen randomly, without taking into account ports already in use!
-    #[structopt(
-        short = 's',
-        long = "spawn",
-        env = "LSP_SPAWN_PORTS",
-        default_value = "5008-65535"
-    )]
-    lsp_spawn_ports: PortRange,
-}
-
-#[derive(Debug)]
-struct PortRange {
-    range: RangeInclusive<u16>,
-}
-
-impl FromStr for PortRange {
-    type Err = ParsePortRangeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (start, end) = s.split_once('-').ok_or(MissingEndSeperator)?;
-        let start = start.trim().parse()?;
-        let end = end.trim().parse()?;
-
-        if start > end {
-            Err(StartLargerThanEnd)
-        } else {
-            Ok(PortRange { range: start..=end })
-        }
-    }
-}
+mod pool;
 
 fn create_tcp_listener(candidate: SocketAddr) -> Result<TcpListener, std::io::Error> {
     let domain = Domain::for_address(candidate);
@@ -103,6 +48,17 @@ fn main() -> Result<(), LspOnDemandError> {
     if !args.lsp_jar.exists() || !args.lsp_jar.is_file() {
         return Err(LspOnDemandError::LSPNotFound(args.lsp_jar));
     }
+
+    let lsp_pool = r2d2::Pool::builder()
+        .max_lifetime(Some(Duration::from_secs(4 * 60)))
+        .test_on_check_out(true)
+        .min_idle(Some(2))
+        .max_size(6)
+        .build(pool::LSPPoolManager::new(
+            args.java,
+            args.lsp_jar,
+            args.lsp_spawn_ports,
+        ))?;
 
     let sock_ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.lsp_listen_port));
     let sock_ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, args.lsp_listen_port));
@@ -139,50 +95,16 @@ fn main() -> Result<(), LspOnDemandError> {
         .local_addr()
         .map_or_else(|_| String::from("unknown"), |address| address.to_string());
 
-    let mut rng = rand::thread_rng();
-
     info!("Waiting for connections on {}", address);
 
     for connection in listener.incoming() {
         match connection {
             Err(err) => error!("{}", err),
-            Ok(con) => handle_connection(
-                con,
-                rng.gen_range(args.lsp_spawn_ports.range.clone()),
-                &args,
-            ),
+            Ok(con) => handle_connection(con, lsp_pool.clone()),
         }
     }
 
     Ok(())
-}
-
-const DEFAULT_JAR_PATH: &str = {
-    if cfg!(target_os = "windows") {
-        "./server/kieler-language-server.win.jar"
-    } else if cfg!(target_os = "macos") {
-        "./server/kieler-language-server.osx.jar"
-    } else if cfg!(target_os = "linux") {
-        "./server/kieler-language-server.linux.jar"
-    } else {
-        "./server/kieler-language-server.unknown.jar"
-    }
-};
-
-fn lsp_command(port: u16, args: &Arguments) -> Command {
-    let mut command = std::process::Command::new(&args.java);
-    command
-        .args(&[
-            &format!("-Dport={}", port),
-            "-Dfile.encoding=UTF-8",
-            "-Djava.awt.headless=true",
-            "-Dlog4j.configuration=file:server/log4j.properties",
-            "-XX:+IgnoreUnrecognizedVMOptions",
-            "-XX:+ShowCodeDetailsInExceptionMessages",
-            "-jar",
-        ])
-        .arg(&args.lsp_jar);
-    command
 }
 
 fn relay_connection(mut rx: TcpStream, mut tx: TcpStream) {
@@ -195,17 +117,13 @@ fn relay_connection(mut rx: TcpStream, mut tx: TcpStream) {
             }
         }
     }
+    tx.shutdown(Shutdown::Both).unwrap();
+    rx.shutdown(Shutdown::Both).unwrap();
 }
 
-fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
-    let mut lsp_cmd = lsp_command(port, args);
-
+fn handle_connection(client_con: TcpStream, lsp_pool: Pool<LSPPoolManager>) {
     std::thread::spawn(move || {
-        let lsp_addrs = [
-            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-        ];
-        let mut lsp = format!("{} or {}", lsp_addrs[0], lsp_addrs[1]);
+        let mut connection = lsp_pool.get().unwrap();
 
         let client_addr = client_con.peer_addr().ok();
         let client = match client_addr {
@@ -213,24 +131,13 @@ fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
             None => String::from("unknown"),
         };
 
-        info!(
-            "[{}] attempting to spawn LSP on port {}\n> {:?}",
-            client, port, lsp_cmd
-        );
-
-        let mut lsp_proc = match lsp_cmd.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                error!("[{}] Failed to spawn child lsp process: {}", client, err);
-                return;
-            }
-        };
+        let server_con = connection.deref_mut().connect(&client).unwrap();
 
         let client_read = match client_con.try_clone() {
             Ok(x) => x,
             Err(err) => {
                 error!(
-                    "[{}] Failed to clone client stream, for independent processing of writes and reads: {}",
+                    "[Client:{}] Failed to clone client stream, for independent processing of writes and reads: {}",
                     client, err
                 );
                 return;
@@ -238,31 +145,11 @@ fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
         };
         let client_write = client_con;
 
-        debug!("[{}] Giving the LSP time to startup!", client);
-        std::thread::sleep(Duration::from_secs(3));
-        info!("[{}] Attempting to connect to LSP at {}", client, lsp);
-
-        let server_con = loop {
-            let server_con = std::net::TcpStream::connect(lsp_addrs.as_slice());
-            if let Ok(con) = server_con {
-                if let Ok(lsp_addr) = con.peer_addr() {
-                    lsp = lsp_addr.to_string();
-                }
-                info!("[{}] Connected to LSP at {}", client, lsp);
-                break con;
-            } else if let Ok(Some(_exit)) = lsp_proc.try_wait() {
-                return;
-            } else {
-                std::thread::sleep(Duration::from_secs(1));
-                info!("[{}] Re-Attempting to connect to LSP at {}", client, lsp);
-            }
-        };
-
         let server_read = match server_con.try_clone() {
             Ok(x) => x,
             Err(err) => {
                 error!(
-                    "[{}] Failed to clone server stream, for independent processing of writes and reads: {}",
+                    "[Client:{}] Failed to clone server stream, for independent processing of writes and reads: {}",
                     client, err
                 );
                 return;
@@ -271,26 +158,14 @@ fn handle_connection(client_con: TcpStream, port: u16, args: &Arguments) {
         let server_write = server_con;
 
         let join_handle = std::thread::spawn(move || relay_connection(server_read, client_write));
-
         relay_connection(client_read, server_write);
 
-        debug!("[{}] Killing LSP at {}", client, lsp);
-        if let Err(err) = lsp_proc.kill() {
-            warn!("[{}] Failed to kill lsp child process: {}", client, err);
-            info!("[{}] Will not wait for lsp child process", client)
-        } else {
-            // only wait on lsp process if it was killed successfully
-            if let Err(err) = lsp_proc.wait() {
-                warn!("[{}] Failed to wait for lsp child process: {}", client, err)
-            }
-        }
         if let Err(_err) = join_handle.join() {
             warn!(
-                "[{}] Failed to join panicked server -> client relay thread",
+                "[Client:{}] Failed to join panicked server -> client relay thread",
                 client
             );
         }
-        info!("[{}] Finished handling a connection and cleanup!", client)
     });
 }
 
